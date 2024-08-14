@@ -1,0 +1,6 @@
+py-cord
+google_api_python_client
+protobuf
+python-dotenv
+wikipedia
+yt_dlp
