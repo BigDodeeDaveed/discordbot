@@ -11,36 +11,25 @@ from collections import deque
 load_dotenv()
 
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
-
 youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
 
 class MusicPlayer(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.players = {}
-        self.queues = {}
+        self.players = {}  # To keep track of voice clients per guild
+        self.queues = {}  # To manage song queues for each guild
 
     @slash_command(name="play", description="Plays music or videos from Youtube.")
+    @commands.cooldown(1, 3, commands.BucketType.user)
     async def play(self, ctx, *, query):
+        
         await ctx.defer()  
         if ctx.author.voice is None:
-            await ctx.respond("You need to be in a Voice Channel to play a song.")
+            await ctx.respond("You need to be in a Voice Channel to use this command.")
             return
 
-        voice_channel = ctx.author.voice.channel
         vc = ctx.voice_client
-
-        if ctx.voice_client is None:
-            await voice_channel.connect()
-            await ctx.respond(f"Joined {voice_channel}.")
-            vc = ctx.voice_client
-        else:
-            await ctx.voice_client.move_to(voice_channel)
-            await ctx.respond(f"Moved to {voice_channel}.")
-        
-        self.players[ctx.guild.id] = ctx.voice_client
-        asyncio.create_task(self.check_inactivity(ctx.guild.id))
 
         if ctx.guild.id not in self.queues:
             self.queues[ctx.guild.id] = deque()
@@ -49,11 +38,11 @@ class MusicPlayer(commands.Cog):
             'format': 'bestaudio/best',
             'noplaylist': 'True',
             'quiet': True,
-            'extract_flat': 'in_playlist',  
+            'extract_flat': 'in_playlist',
             'no_warnings': True,
             'source_address': '0.0.0.0',
-            'cachedir': False, 
-            'skip_download': True,  
+            'cachedir': False,
+            'skip_download': True,
         }
 
         try:
@@ -79,12 +68,32 @@ class MusicPlayer(commands.Cog):
                 self.queues[ctx.guild.id].append(song_info)
             await ctx.respond(f"Added to queue: {song_info['title']}")
 
-            if not vc.is_playing():
+            if not vc or not vc.is_playing():
                 await self.play_next(ctx)
 
         except Exception as e:
             await ctx.respond(f"An error occurred: {str(e)}")
             print(f"An error occurred: {str(e)}")
+
+    @slash_command(name="join", description="Joins VC")
+    @commands.cooldown(1, 3, commands.BucketType.user)
+    async def join(self, ctx):
+
+        if ctx.author.voice is None:
+            await ctx.respond("You need to be in a Voice Channel to use this command.")
+            return
+        
+        voice_channel = ctx.author.voice.channel
+        
+        if ctx.voice_client is None:
+            vc = await voice_channel.connect()
+            await ctx.respond(f"Joined {voice_channel}.")
+        else:
+            vc = ctx.voice_client
+            await ctx.respond(f"Already connected to {vc.channel}.")
+        
+        self.players[ctx.guild.id] = vc
+        asyncio.create_task(self.check_inactivity(ctx.guild.id))
 
     async def play_next(self, ctx):
         vc = ctx.voice_client
@@ -103,12 +112,12 @@ class MusicPlayer(commands.Cog):
                     after=lambda e: asyncio.run_coroutine_threadsafe(self.after_song(ctx), self.bot.loop).result())
 
             await ctx.send(f"Now playing: {song_info['title']} requested by {song_info['requester']}")
+            asyncio.create_task(self.check_inactivity(ctx.guild.id))  # Restart inactivity check when a new song plays
         except Exception as e:
             await ctx.send(f"An error occurred while playing the next song: {str(e)}")
             print(f"An error occurred while playing the next song: {str(e)}")
 
     async def after_song(self, ctx):
-        """Handles what happens after a song finishes playing."""
         vc = ctx.voice_client
 
         if not vc or not self.queues[ctx.guild.id]:  # If the queue is empty
@@ -120,7 +129,7 @@ class MusicPlayer(commands.Cog):
     @slash_command(name="pause", description="Pauses the bot.")
     async def pause(self, ctx):
         if ctx.author.voice is None:
-            await ctx.respond("You need to be in a Voice Channel to pause the song.")
+            await ctx.respond("You need to be in a Voice Channel to use this command.")
             return
 
         if ctx.voice_client.is_playing():
@@ -132,7 +141,7 @@ class MusicPlayer(commands.Cog):
     @slash_command(name="resume", description="Resumes the bot.")
     async def resume(self, ctx):
         if ctx.author.voice is None:
-            await ctx.respond("You need to be in a Voice Channel to resume the song.")
+            await ctx.respond("You need to be in a Voice Channel to use this command.")
             return
 
         if ctx.voice_client.is_paused():
@@ -144,7 +153,7 @@ class MusicPlayer(commands.Cog):
     @slash_command(name="skip", description="Skips to the next song in queue.")
     async def skipsong(self, ctx):
         if ctx.author.voice is None:
-            await ctx.respond("You need to be in a Voice Channel to skip the song.")
+            await ctx.respond("You need to be in a Voice Channel to use this command.")
             return
 
         ctx.voice_client.stop()
@@ -153,7 +162,7 @@ class MusicPlayer(commands.Cog):
     @slash_command(name="stop", description="Stops the music.")
     async def stop(self, ctx):
         if ctx.author.voice is None:
-            await ctx.respond("You need to be in a Voice Channel to stop the music.")
+            await ctx.respond("You need to be in a Voice Channel to use this command.")
             return
         
         if ctx.voice_client and ctx.voice_client.is_playing():
@@ -174,10 +183,11 @@ class MusicPlayer(commands.Cog):
             if player.is_connected() and not player.is_playing() and not player.is_paused():
                 await player.disconnect()  # Disconnect the bot if it's not playing or paused
                 del self.players[guild_id]  # Remove the player from the tracking dictionary
-                await self.bot.get_guild(guild_id).system_channel.send("Disconnected due to inactivity.")
+                guild = self.bot.get_guild(guild_id)
+                if guild and guild.system_channel:
+                    await guild.system_channel.send("Disconnected due to inactivity.")
         except Exception as e:
             print(f"Error in inactivity check for guild {guild_id}: {e}")
-
 
 def setup(bot):
     bot.add_cog(MusicPlayer(bot))
